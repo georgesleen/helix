@@ -6,7 +6,10 @@ use crate::{
 };
 use dap::{StackFrame, Thread, ThreadStates};
 use helix_core::syntax::config::{DebugConfigCompletion, DebugTemplate};
-use helix_dap::{self as dap, requests::TerminateArguments};
+use helix_dap::{
+    self as dap,
+    requests::{DisconnectArguments, TerminateArguments},
+};
 use helix_lsp::block_on;
 use helix_view::editor::Breakpoint;
 
@@ -614,7 +617,21 @@ pub fn dap_terminate(cx: &mut Context) {
             editor.debug_adapters.unset_active_client();
         });
     } else {
-        cx.editor.debug_adapters.unset_active_client();
+        // No `terminate` support does not mean nothing can be ended:
+        // `disconnect` carries `terminateDebuggee`, and an adapter that
+        // advertises `supportTerminateDebuggee` -- lldb-dap does, while
+        // advertising no `supportsTerminateRequest` -- kills the debuggee
+        // on it. Merely unsetting the active client left the adapter and a
+        // ptrace-stopped debuggee alive with nothing able to reach them,
+        // one leaked pair per session the user ended.
+        let request = debugger.disconnect(Some(DisconnectArguments {
+            restart: Some(false),
+            terminate_debuggee: Some(true),
+            suspend_debuggee: None,
+        }));
+        dap_callback(cx.jobs, request, |editor, _compositor, _response: ()| {
+            editor.debug_adapters.unset_active_client();
+        });
     }
 }
 
