@@ -47,6 +47,10 @@ pub struct Client {
     pub quirks: DebuggerQuirks,
     /// The config which was used to start this debugger.
     pub config: Option<DebugAdapterConfig>,
+    /// Accumulated session output, excluding telemetry. Reset per session.
+    output: String,
+    /// Whether this session exited with a nonzero code.
+    failed: bool,
 }
 
 impl Client {
@@ -95,6 +99,8 @@ impl Client {
             active_frame: None,
             quirks: DebuggerQuirks::default(),
             config: None,
+            output: String::new(),
+            failed: false,
         };
 
         tokio::spawn(Self::recv(id, server_rx, client_tx));
@@ -160,6 +166,31 @@ impl Client {
 
     pub fn starting_request_args(&self) -> Option<&Value> {
         self.starting_request_args.as_ref()
+    }
+
+    /// Append output text; chunks are concatenated as-is.
+    pub fn push_output(&mut self, text: &str) {
+        self.output.push_str(text);
+    }
+
+    /// Session output captured so far.
+    pub fn output(&self) -> &str {
+        &self.output
+    }
+
+    /// Take and reset the accumulated session output.
+    pub fn take_output(&mut self) -> String {
+        std::mem::take(&mut self.output)
+    }
+
+    /// Mark this session as having exited with a nonzero code.
+    pub fn mark_failed(&mut self) {
+        self.failed = true;
+    }
+
+    /// Take and reset the failed flag.
+    pub fn take_failed(&mut self) -> bool {
+        std::mem::take(&mut self.failed)
     }
 
     pub async fn tcp_process(

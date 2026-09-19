@@ -4050,6 +4050,9 @@ fn load_misc_api(engine: &mut Engine, generate_sources: bool) {
         .register_fn_with_ctx(CTX, "set-status!", set_status)
         .register_fn_with_ctx(CTX, "set-warning!", set_warning)
         .register_fn_with_ctx(CTX, "set-error!", set_error)
+        .register_fn_with_ctx(CTX, "set-output!", set_output)
+        .register_fn_with_ctx(CTX, "show-output!", show_output)
+        .register_fn("output->text", output_to_text)
         .register_fn_with_ctx(CTX, "send-lsp-command", send_arbitrary_lsp_command)
         .register_fn_with_ctx(
             CTX,
@@ -4979,6 +4982,34 @@ fn set_error(cx: &mut Context, value: SteelVal) {
         SteelVal::StringV(s) => cx.editor.set_error(s.as_ref().to_owned()),
         _ => cx.editor.set_error(value.to_string()),
     }
+}
+
+/// (set-output! text) -> void
+/// Stores `text` (raw, possibly ANSI-decorated) as the captured output
+/// buffer. Does not display anything by itself; pair with `show-output!`.
+fn set_output(cx: &mut Context, value: SteelVal) {
+    match value {
+        SteelVal::StringV(s) => cx.editor.set_output(s.as_ref().to_owned()),
+        _ => cx.editor.set_output(value.to_string()),
+    }
+}
+
+/// (show-output!) -> bool
+/// Parses the captured output buffer's ANSI escapes and (re)populates the
+/// native, coloured, searchable output scratch buffer, focusing it.
+/// Returns `#f` without doing anything if there is no captured output.
+fn show_output(cx: &mut Context) -> bool {
+    cx.editor.show_output()
+}
+
+/// (output->text text) -> string
+/// Strips ANSI escape sequences from `text` using the same tokenizer as the
+/// native output buffer, returning plain text only. Intended for feeding
+/// text-only consumers (e.g. forcing cargo/libtest colour, then stripping
+/// it back out for their own plain-text output parsers or the status line)
+/// without a second, divergent ANSI parser implementation.
+fn output_to_text(text: SteelString) -> String {
+    helix_view::ansi::ansi_to_plain_text(text.as_str())
 }
 
 fn trigger_callback(cx: &mut Context, key: KeyEvent) {

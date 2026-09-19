@@ -55,6 +55,7 @@ pub fn render_document(
         doc_annotations,
         syntax_highlighter,
         overlay_highlights,
+        doc.output_styles(),
         theme,
         decorations,
     )
@@ -69,6 +70,7 @@ pub fn render_text(
     text_annotations: &TextAnnotations,
     syntax_highlighter: Option<Highlighter<'_>>,
     overlay_highlights: Vec<syntax::OverlayHighlights>,
+    output_styles: &[(std::ops::Range<usize>, Style)],
     theme: &Theme,
     mut decorations: DecorationManager,
 ) {
@@ -81,6 +83,7 @@ pub fn render_text(
     let mut syntax_highlighter =
         SyntaxHighlighter::new(syntax_highlighter, text, theme, renderer.text_style);
     let mut overlay_highlighter = OverlayHighlighter::new(overlay_highlights, theme);
+    let mut output_highlighter = OutputStyleHighlighter::new(output_styles);
 
     let mut last_line_pos = LinePos {
         first_visual_line: false,
@@ -139,6 +142,9 @@ pub fn render_text(
         while grapheme.char_idx >= overlay_highlighter.pos {
             overlay_highlighter.advance();
         }
+        while grapheme.char_idx >= output_highlighter.pos {
+            output_highlighter.advance();
+        }
 
         let grapheme_style = if let GraphemeSource::VirtualText { highlight } = grapheme.source {
             let mut style = renderer.text_style;
@@ -148,11 +154,13 @@ pub fn render_text(
             GraphemeStyle {
                 syntax_style: style,
                 overlay_style: Style::default(),
+                output_style: Style::default(),
             }
         } else {
             GraphemeStyle {
                 syntax_style: syntax_highlighter.style,
                 overlay_style: overlay_highlighter.style,
+                output_style: output_highlighter.style,
             }
         };
         decorations.decorate_grapheme(renderer, &grapheme);
@@ -196,6 +204,10 @@ pub struct TextRenderer<'a> {
 pub struct GraphemeStyle {
     syntax_style: Style,
     overlay_style: Style,
+    /// ANSI-derived style for native output scratch buffers. Always wins
+    /// over syntax/overlay highlighting since it represents the literal
+    /// colours a subprocess/DAP session produced.
+    output_style: Style,
 }
 
 impl<'a> TextRenderer<'a> {
@@ -334,6 +346,7 @@ impl<'a> TextRenderer<'a> {
             style = style.patch(self.whitespace_style);
         }
         style = style.patch(grapheme_style.overlay_style);
+        style = style.patch(grapheme_style.output_style);
 
         let width = grapheme.width();
         let mut is_tab = false;
@@ -571,6 +584,55 @@ impl<'t> OverlayHighlighter<'t> {
         self.style = highlights.fold(base, |acc, highlight| {
             acc.patch(self.theme.highlight(highlight))
         });
+        self.update_pos();
+    }
+}
+
+/// Iterates directly over pre-resolved `Style` ranges (as parsed from ANSI
+/// SGR sequences by `helix_view::ansi::parse_ansi`), bypassing the
+/// theme/`Highlight`-index indirection used by `SyntaxHighlighter` and
+/// `OverlayHighlighter`: the styles are already concrete `fg`/`bg`/modifier
+/// values, not theme scopes. Follows the same `pos`/`advance` polling
+/// convention as its siblings so it composes with the same render loop.
+struct OutputStyleHighlighter<'d> {
+    ranges: &'d [(std::ops::Range<usize>, Style)],
+    idx: usize,
+    pos: usize,
+    style: Style,
+}
+
+impl<'d> OutputStyleHighlighter<'d> {
+    fn new(ranges: &'d [(std::ops::Range<usize>, Style)]) -> Self {
+        let mut highlighter = Self {
+            ranges,
+            idx: 0,
+            pos: 0,
+            style: Style::default(),
+        };
+        highlighter.update_pos();
+        highlighter
+    }
+
+    fn update_pos(&mut self) {
+        self.pos = match self.ranges.get(self.idx) {
+            // Not currently inside a styled range: the next event is that
+            // range's start.
+            Some((range, _)) if self.style == Style::default() => range.start,
+            // Currently inside a styled range: the next event is where it
+            // ends.
+            Some((range, _)) => range.end,
+            None => usize::MAX,
+        };
+    }
+
+    fn advance(&mut self) {
+        if self.style != Style::default() {
+            // Leaving the range at `idx`.
+            self.idx += 1;
+            self.style = Style::default();
+        } else if let Some((_, style)) = self.ranges.get(self.idx) {
+            self.style = *style;
+        }
         self.update_pos();
     }
 }

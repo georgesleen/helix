@@ -319,17 +319,30 @@ impl Editor {
                     Event::Output(events::OutputBody {
                         category, output, ..
                     }) => {
-                        let prefix = match category {
-                            Some(category) => {
-                                if &category == "telemetry" {
-                                    return false;
-                                }
-                                format!("Debug ({}):", category)
-                            }
-                            None => "Debug:".to_owned(),
-                        };
+                        if category.as_deref() == Some("telemetry") {
+                            return false;
+                        }
 
                         log::info!("{}", output);
+
+                        let is_active =
+                            self.debug_adapters.get_active_client().map(|c| c.id()) == Some(id);
+
+                        match self.debug_adapters.get_client_mut(id) {
+                            Some(debugger) => debugger.push_output(&output),
+                            None => return false,
+                        }
+
+                        // Only mirror into the live scratch buffer for the
+                        // active client, so concurrent sessions don't interleave.
+                        if is_active {
+                            self.append_output(&output);
+                        }
+
+                        let prefix = match category {
+                            Some(category) => format!("Debug ({}):", category),
+                            None => "Debug:".to_owned(),
+                        };
                         self.set_status(format!("{} {}", prefix, output));
                     }
                     Event::ProgressStart(body) => {
@@ -424,6 +437,15 @@ impl Editor {
                             return false;
                         }
 
+                        // Flush output; a trailing chunk between Exited and
+                        // Terminated is included since this runs last.
+                        let failed = debugger.take_failed();
+                        let output_text = debugger.take_output();
+                        self.set_output(output_text);
+                        if failed {
+                            self.show_output();
+                        }
+
                         match restart_arg {
                             Some(Value::Bool(false)) | None => {
                                 self.debug_adapters.remove_client(id);
@@ -442,6 +464,10 @@ impl Editor {
                             }
                             Some(val) => {
                                 log::info!("Attempting to restart debug session.");
+                                let debugger = match self.debug_adapters.get_client_mut(id) {
+                                    Some(debugger) => debugger,
+                                    None => return false,
+                                };
                                 let connection_type = match debugger.connection_type() {
                                     Some(connection_type) => connection_type,
                                     None => {
@@ -468,6 +494,18 @@ impl Editor {
                     }
                     Event::Exited(resp) => {
                         let exit_code = resp.exit_code;
+
+                        // Snapshot now for visibility; Terminated does the
+                        // final flush and owns the auto-show decision so a
+                        // trailing Output event isn't left stale/unopened.
+                        if let Some(debugger) = self.debug_adapters.get_client_mut(id) {
+                            if exit_code != 0 {
+                                debugger.mark_failed();
+                            }
+                            let output_text = debugger.output().to_string();
+                            self.set_output(output_text);
+                        }
+
                         if exit_code != 0 {
                             self.set_error(format!(
                                 "Debuggee failed to exit successfully (exit code: {exit_code})."

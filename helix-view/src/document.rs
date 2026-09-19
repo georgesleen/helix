@@ -216,6 +216,14 @@ pub struct Document {
     pub name: Option<String>,
     pub readonly: bool,
 
+    /// Styled ranges (char offsets into `text`) produced by parsing ANSI
+    /// SGR sequences out of native scratch output (see `crate::ansi`).
+    /// Cleared on every text-changing `apply`, so stale ranges can never
+    /// miscolour content the styling wasn't computed for; repopulated
+    /// atomically by `Editor::show_output` immediately after it rewrites
+    /// the buffer text.
+    pub(crate) output_styles: Vec<(std::ops::Range<usize>, crate::graphics::Style)>,
+
     pub previous_diagnostic_ids: HashMap<LanguageServerId, String>,
 
     /// Annotations for LSP document color swatches
@@ -770,6 +778,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
             name: None,
             readonly: false,
+            output_styles: Vec::new(),
             jump_labels: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
@@ -1490,6 +1499,11 @@ impl Document {
 
         self.modified_since_accessed = true;
         self.version += 1;
+        // Any real edit invalidates previously computed ANSI style ranges;
+        // `Editor::show_output`/`set_output` repopulate them immediately
+        // after rewriting the buffer, so this only ever discards ranges
+        // that no longer correspond to the (now different) text.
+        self.output_styles.clear();
 
         for selection in self.selections.values_mut() {
             *selection = selection
@@ -2094,6 +2108,23 @@ impl Document {
     #[inline]
     pub fn text(&self) -> &Rope {
         &self.text
+    }
+
+    /// The ANSI-derived styled ranges (char offsets) for the native output
+    /// scratch buffer, if any were parsed for the current text.
+    #[inline]
+    pub fn output_styles(&self) -> &[(std::ops::Range<usize>, crate::graphics::Style)] {
+        &self.output_styles
+    }
+
+    /// Overwrites the ANSI-derived styled ranges. Callers MUST ensure the
+    /// ranges are valid char offsets into the current `text` and are
+    /// sorted, non-overlapping; this is upheld by `crate::ansi::parse_ansi`.
+    pub(crate) fn set_output_styles(
+        &mut self,
+        styles: Vec<(std::ops::Range<usize>, crate::graphics::Style)>,
+    ) {
+        self.output_styles = styles;
     }
 
     #[inline]

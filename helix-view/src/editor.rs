@@ -1329,6 +1329,16 @@ pub struct Editor {
     pub status_msg: Option<(Cow<'static, str>, Severity)>,
     pub autoinfo: Option<Info>,
 
+    /// Raw (ANSI-decorated) text captured by `:run-here`/`:debug-here`
+    /// subprocess and DAP session output, accumulated via `append_output`
+    /// and replaced wholesale via `set_output`. Consumed by `show_output`,
+    /// which parses it and (re)populates the native output scratch buffer.
+    output_buffer: String,
+    /// The scratch document backing the native output buffer, if one has
+    /// been created and is still open. Reused across calls to avoid
+    /// spawning a fresh scratch buffer every time output is shown.
+    output_doc: Option<DocumentId>,
+
     pub config: Arc<dyn DynAccess<Config>>,
     pub auto_pairs: Option<AutoPairs>,
 
@@ -1482,6 +1492,8 @@ impl Editor {
             ))),
             status_msg: None,
             autoinfo: None,
+            output_buffer: String::new(),
+            output_doc: None,
             idle_timer: Box::pin(sleep(conf.idle_timeout)),
             redraw_timer: Box::pin(sleep(Duration::MAX)),
             last_motion: None,
@@ -1598,6 +1610,74 @@ impl Editor {
             .as_ref()
             .map(|(_, sev)| *sev == Severity::Error)
             .unwrap_or(false)
+    }
+
+    /// Replaces the raw (ANSI-decorated) captured output text wholesale.
+    /// Does not affect the on-screen scratch buffer until `show_output` is
+    /// called; callers that always want it displayed should call
+    /// `show_output` afterward.
+    pub fn set_output<T: Into<String>>(&mut self, text: T) {
+        self.output_buffer = text.into();
+    }
+
+    /// Appends to the raw captured output text, e.g. for streaming
+    /// subprocess/DAP output as it arrives.
+    pub fn append_output(&mut self, text: &str) {
+        self.output_buffer.push_str(text);
+    }
+
+    /// Returns the currently captured raw output text without consuming or
+    /// displaying it.
+    pub fn output(&self) -> &str {
+        &self.output_buffer
+    }
+
+    /// Parses the captured output text and (re)populates the native output
+    /// scratch buffer with the plain text plus ANSI-derived styling,
+    /// creating the scratch document on first use and reusing it on
+    /// subsequent calls. Returns `false` (and leaves any existing scratch
+    /// buffer untouched) if there is no captured output to show.
+    pub fn show_output(&mut self) -> bool {
+        if self.output_buffer.is_empty() {
+            return false;
+        }
+
+        let (plain_text, styles) = crate::ansi::parse_ansi(&self.output_buffer);
+
+        let doc_id = match self.output_doc.filter(|id| self.documents.contains_key(id)) {
+            Some(id) => id,
+            None => {
+                let mut doc = Document::default(self.config.clone(), self.syn_loader.clone());
+                doc.readonly = true;
+                doc.name = Some("[output]".to_string());
+                let id = self.new_document(doc);
+                self.output_doc = Some(id);
+                id
+            }
+        };
+
+        self.switch(doc_id, Action::Replace);
+        let view_id = self.tree.focus;
+        let doc = self
+            .documents
+            .get_mut(&doc_id)
+            .expect("output_doc was just created or verified present");
+        // Native scratch buffers are otherwise readonly; bypass that for
+        // our own controlled rewrite of the contents.
+        let was_readonly = doc.readonly;
+        doc.readonly = false;
+        let end = doc.text().len_chars();
+        let transaction = helix_core::Transaction::change(
+            doc.text(),
+            std::iter::once((0, end, Some(plain_text.into()))),
+        );
+        doc.apply(&transaction, view_id);
+        doc.set_output_styles(styles);
+        doc.set_selection(view_id, Selection::point(0));
+        doc.readonly = was_readonly;
+        doc.reset_modified();
+
+        true
     }
 
     pub fn unset_theme_preview(&mut self) -> anyhow::Result<()> {

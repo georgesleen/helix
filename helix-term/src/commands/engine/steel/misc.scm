@@ -140,6 +140,33 @@
 ;;Sets the content of the status line, with the error severity
 (define set-error! helix.set-error!)
 
+(provide set-output!)
+;;@doc
+;;Stores `text` (raw text, may contain ANSI SGR colour/style escapes) as the
+;;captured output buffer. Does not display anything by itself; call
+;;`show-output!` afterward to populate and focus the native output scratch
+;;buffer.
+(define set-output! helix.set-output!)
+
+(provide show-output!)
+;;@doc
+;;Parses the captured output buffer's ANSI escapes into plain, searchable
+;;text plus rendered colours/styles, and (re)populates the native output
+;;scratch buffer with it, focusing that buffer. Returns `#f` without doing
+;;anything if there is no captured output (e.g. `set-output!` was never
+;;called, or was called with an empty string).
+(define show-output! helix.show-output!)
+
+(provide output->text)
+;;@doc
+;;Strips ANSI escape sequences (SGR colour/style codes, other CSI
+;;sequences, OSC sequences) from `text`, returning plain text only. Uses the
+;;same parser as the native output buffer, so callers that need plain text
+;;(e.g. to feed a subprocess's captured output through a text-only parser,
+;;or onto the status line) don't need a second ANSI-stripping
+;;implementation.
+(define output->text helix.output->text)
+
 (provide send-lsp-command)
 ;;@doc
 ;; Send an lsp command. The `lsp-name` must correspond to an active lsp.
