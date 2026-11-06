@@ -40,8 +40,8 @@ const DEFAULT_PLUGIN_PRECEDENCE: &[PluginSystemTypes] = &[
     PluginSystemTypes::None(NoEngine),
 ];
 
-static PLUGIN_PRECEDENCE: once_cell::sync::OnceCell<Vec<PluginSystemTypes>> =
-    once_cell::sync::OnceCell::new();
+static PLUGIN_PRECEDENCE: std::sync::OnceLock<Vec<PluginSystemTypes>> =
+    std::sync::OnceLock::new();
 
 fn plugins() -> impl Iterator<Item = &'static PluginSystemTypes> {
     PLUGIN_PRECEDENCE.get().unwrap().iter()
